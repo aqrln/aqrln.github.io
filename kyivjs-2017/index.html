@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <title>reveal-md</title>
+        <link rel="stylesheet" href="css/reveal.css">
+        <link rel="stylesheet" href="css/theme/white.css" id="theme">
+        <!-- For syntax highlighting -->
+        <link rel="stylesheet" href="lib/css/github.css">
+
+        <!-- If the query includes 'print-pdf', use the PDF print sheet -->
+        <script>
+          document.write( '<link rel="stylesheet" href="css/print/' + ( window.location.search.match( /print-pdf/gi ) ? 'pdf' : 'paper' ) + '.css" type="text/css" media="print">' );
+        </script>
+    </head>
+    <body>
+
+        <div class="reveal">
+            <div class="slides"><section  data-markdown><script type="text/template"># Путешествие вглубь Node.js
+
+&nbsp;
+
+### @aqrln / Алексей Орленко
+
+Backend Engineer at SinceTV, Node.js contributor
+</script></section><section  data-markdown><script type="text/template">
+## О чём будем говорить
+
+1. Предыстория (свой RPC-протокол)
+3. Проблема с Unix domain сокетами
+4. Углубляемся в исходники ноды и решаем проблему
+5. Приятные побочные эффекты
+</script></section><section  data-markdown><script type="text/template">
+## Предыстория
+</script></section><section  data-markdown><script type="text/template">
+## github.com/metarhia/JSTP
+</script></section><section  data-markdown><script type="text/template">
+## deepstream.io
+</script></section><section  data-markdown><script type="text/template">
+## horizon.io
+</script></section><section  data-markdown><script type="text/template">
+<https://lurkmore.to/Фатальный_недостаток>
+</script></section><section  data-markdown><script type="text/template">
+![SOAP](img/make-soap-great-again.jpg)
+</script></section><section  data-markdown><script type="text/template">
+### Готово и стабильно
+
+* Удалённые методы
+* Удалённые события
+* Динамическое построение прокси-объектов по интроспекции с сервера
+</script></section><section  data-markdown><script type="text/template">
+```javascript
+connection.inspect('chat', (error, chat) => {
+  if (error) throw error;
+
+  chat.on('message', (msg) => {
+    console.log(`${msg.user}: ${msg.text}`);
+  });
+
+  chat.postMessage('Hello!', (error) => {
+    if (error) throw error;
+  });
+});
+```
+</script></section><section  data-markdown><script type="text/template">
+### Спроектировано и в разработке
+
+* Разделение данных и метаданных
+* Синхронизация структур данных
+* Стриминг двоичных данных
+* Эффективное планирование I/O и обработки запросов
+</script></section><section  data-markdown><script type="text/template">
+### Транспорты
+
+* TCP
+* TCP + TLS
+* WebSocket
+* WebSocket + TLS
+* Unix Domain Sockets
+</script></section><section  data-markdown><script type="text/template">
+## IPC
+
+Inter-Process Communication
+
+<aside class="notes" data-markdown>files, signals, message queues, pipes, named pipes, shared memory,
+memory-mapped files, network sockets</aside></script></section><section  data-markdown><script type="text/template">
+### Unix domain socket (IPC socket)
+
+* Stream/datagram
+* Full-duplex
+* То же API, что у BSD-сокетов
+</script></section><section  data-markdown><script type="text/template">
+### Создание TCP-сервера в Node.js
+
+```javascript
+const net = require('net');
+
+const PORT = 3000;
+
+const server = net.createServer((client) => {
+  // ...
+});
+
+server.listen(PORT);
+```
+</script></section><section  data-markdown><script type="text/template">
+### Создание IPC-сервера в Node.js
+
+```javascript
+const net = require('net');
+
+const FILENAME = '/tmp/my-service.sock';
+
+const server = net.createServer((client) => {
+  // ...
+});
+
+server.listen(FILENAME);
+```
+</script></section><section  data-markdown><script type="text/template">
+### Создание IPC-сервера в Node.js
+
+```javascript
+const net = require('net');
+
+const FILENAME = process.platform === 'win32' ?
+  '\\\\.\\pipe\\my-service' :
+  '/tmp/my-service.sock';
+
+const server = net.createServer((client) => {
+  // ...
+});
+
+server.listen(FILENAME);
+```
+</script></section><section  data-markdown><script type="text/template">
+### Создание IPC-сервера в Node.js
+
+```javascript
+const fs = require('fs');
+
+let triedToUnlink = false;
+
+server.on('close', () => {
+  fs.unlink(FILENAME, () => {
+    triedToUnlink = true;
+  });
+});
+
+process.on('exit', () => {
+  if (!triedToUnlink) {
+    fs.unlinkSync(FILENAME);
+  }
+});
+```
+</script></section><section  data-markdown><script type="text/template">
+(Грубо говоря) буфер в ядре *vs.* полный стек TCP/IP
+
+Кто быстрее?
+</script></section><section  data-markdown><script type="text/template">
+### Профилируем
+
+```
+$ node --prof loadtest/server.js
+$ node --prof-process isolate-0x32635b0-v8.log > ticks.txt
+```
+</script></section><section  data-markdown><script type="text/template">
+```
+ [Summary]:
+   ticks  total  nonlib   name
+    106    6.4%    7.0%  JavaScript
+   1291   78.5%   84.7%  C++
+     54    3.3%    3.5%  GC
+    120    7.3%          Shared libraries
+    128    7.8%          Unaccounted
+```
+</script></section><section  data-markdown><script type="text/template">
+```
+ [C++]:
+   ticks  total  nonlib   name
+    998   60.7%   65.4%  syscall
+```
+</script></section><section  data-markdown><script type="text/template">
+![wat](img/wat.jpg)
+</script></section><section  data-markdown><script type="text/template">
+## cork/uncork
+</script></section><section  data-markdown><script type="text/template">
+### Что происходит, когда мы что-то пишем в сокет?
+</script></section><section  data-markdown><script type="text/template">
+### lib/_stream_writable.js
+
+1. `write`
+1. `writeOrBuffer`
+1. `doWrite`
+1. `_write` / `_writev`
+1. `onwrite`
+1. `clearBuffer`
+1. `doWrite`
+1. ...
+</script></section><section  data-markdown><script type="text/template">
+### Куда исчезает _writev у IPC-сокетов?
+
+Смотрим `lib/net.js`.
+</script></section><section  data-markdown><script type="text/template">
+```javascript
+function initSocketHandle(self) {
+  self.destroyed = false;
+  self._bytesDispatched = 0;
+  self._sockname = null;
+
+  // Handle creation may be deferred to bind() or connect() time.
+  if (self._handle) {
+    self._handle.owner = self;
+    self._handle.onread = onread;
+
+    // If handle doesn't support writev - neither do we
+    if (!self._handle.writev)
+      self._writev = null;
+  }
+}
+```
+</script></section><section  data-markdown><script type="text/template">
+#### src/tcp_wrap.cc
+
+```cpp
+StreamWrap::AddMethods(env, t, StreamBase::kFlagHasWritev);
+```
+
+#### src/pipe_wrap.cc
+
+```cpp
+StreamWrap::AddMethods(env, t);
+```
+</script></section><section  data-markdown><script type="text/template">
+### PR #10677
+
+```cpp
+#ifdef _WIN32
+  StreamWrap::AddMethods(env, t);
+#else
+  StreamWrap::AddMethods(env, t, StreamBase::kFlagHasWritev);
+#endif
+```
+</script></section><section  data-markdown><script type="text/template">
+![redis-bench](img/redis-bench.png)
+</script></section><section  data-markdown><script type="text/template">
+## Q&A
+</script></section></div>
+        </div>
+
+        <script src="lib/js/head.min.js"></script>
+        <script src="js/reveal.js"></script>
+
+        <script>
+            function extend() {
+              var target = {};
+              for (var i = 0; i < arguments.length; i++) {
+                var source = arguments[i];
+                for (var key in source) {
+                  if (source.hasOwnProperty(key)) {
+                    target[key] = source[key];
+                  }
+                }
+              }
+              return target;
+            }
+
+            // Optional libraries used to extend on reveal.js
+            var deps = [
+              { src: 'lib/js/classList.js', condition: function() { return !document.body.classList; } },
+              { src: 'plugin/markdown/marked.js', condition: function() { return !!document.querySelector('[data-markdown]'); } },
+              { src: 'plugin/markdown/markdown.js', condition: function() { return !!document.querySelector('[data-markdown]'); } },
+              { src: 'plugin/highlight/highlight.js', async: true, callback: function() { hljs.initHighlightingOnLoad(); } },
+              { src: 'plugin/notes/notes.js', async: true, condition: function() { return !!document.body.classList; } },
+              { src: 'plugin/math/math.js', async: true }
+            ];
+
+            // default options to init reveal.js
+            var defaultOptions = {
+              controls: true,
+              progress: true,
+              history: true,
+              center: true,
+              transition: 'default',
+              dependencies: deps
+            };
+
+            // options from URL query string
+            var queryOptions = Reveal.getQueryHash() || {};
+
+            var options = {
+  "controls": false,
+  "transition": "slide",
+  "transitionSpeed": "fast"
+};
+            options = extend(defaultOptions, options, queryOptions);
+            Reveal.initialize(options);
+        </script>
+    </body>
+</html>
+
